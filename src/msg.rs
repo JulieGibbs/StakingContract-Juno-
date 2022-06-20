@@ -36,6 +36,9 @@ pub enum QueryMsg {
   GetStateInfo{},
   GetAllTokens{},
   GetTokenInfo{},
-  GetCurrentTime{}
+  GetCurrentTime{},
+  GetToken{token_id:String},
+  GetMyIds{address:String},
+  GetMyInfo{address:String}
 }
 

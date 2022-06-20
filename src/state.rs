@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG: Item<State> = Item::new("config_state");
 pub const TOKENINFO : Map<&str,TokenInfo> = Map::new("config_nfts");
+pub const OWNEDTOKEN : Map<&str, Vec<String>>= Map::new("config_owned");
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct State {

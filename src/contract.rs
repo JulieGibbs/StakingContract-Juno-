@@ -1,15 +1,20 @@
 use cosmwasm_std::{
-    entry_point, to_binary,   CosmosMsg, Deps, DepsMut,Binary,QueryRequest,WasmQuery,
+    entry_point, to_binary,   CosmosMsg, Deps, DepsMut,Binary,
     Env, MessageInfo, BankMsg, Response, StdResult, Uint128, WasmMsg, Coin, Order
 };
 
+use cw2::set_contract_version;
 use crate::error::ContractError;
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state::{
-    State,CONFIG,TOKENINFO,TokenInfo
+    State,CONFIG,TOKENINFO,OWNEDTOKEN, TokenInfo
 };
 use cw721::{Cw721ExecuteMsg, Cw721ReceiveMsg};
-use cw20::{Cw20ExecuteMsg,Cw20QueryMsg,BalanceResponse};
+use cw20::{Cw20ExecuteMsg};
+
+
+const CONTRACT_NAME: &str = "NFT_STAKING";
+const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[entry_point]
 pub fn instantiate(
@@ -18,6 +23,7 @@ pub fn instantiate(
     info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
+     set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
     let state = State {
         owner:info.sender.to_string(),
         denom:msg.denom,
@@ -86,7 +92,7 @@ fn execute_stake_nft(
     )?;
 
     let token_info = TokenInfo{
-        owner:rcv_msg.sender,
+        owner:rcv_msg.sender.clone(),
         token_id:rcv_msg.token_id.clone(),
         status : "Staked".to_string(),
         unstake_time : 0,
@@ -94,6 +100,25 @@ fn execute_stake_nft(
         reward_juno: Uint128::new(0),
         reward_hope: Uint128::new(0)
     };
+
+    let my_nfts = OWNEDTOKEN.may_load(deps.storage,&rcv_msg.sender.clone().to_string())?;
+
+    if my_nfts == None{
+        let mut token_ids:Vec<String> = vec![];
+        token_ids.push(rcv_msg.token_id.clone());
+        OWNEDTOKEN.save(deps.storage,&rcv_msg.sender,&token_ids)?;
+
+    }
+
+    else{
+        let mut token_ids = my_nfts.unwrap();
+        token_ids.push(rcv_msg.token_id.clone());
+        OWNEDTOKEN.update(deps.storage,&rcv_msg.sender,
+        |my_nfts|->StdResult<_>{
+            Ok(token_ids)
+        }
+    )?;
+    }
 
     TOKENINFO.save(deps.storage, &rcv_msg.token_id.clone(), &token_info)?;
     
@@ -135,14 +160,14 @@ fn execute_unstake_nft(
         }
     )?;
    }
-    
+   
     Ok(Response::default())
 
 }
 
 fn execute_withdraw_nft(
     deps: DepsMut,
-    env: Env,
+    _env: Env,
     info: MessageInfo,
     token_id: String,
     
@@ -168,10 +193,10 @@ fn execute_withdraw_nft(
           return Err(ContractError::StatusError {  })
       }
 
-      if (env.block.time.seconds() - token.unstake_time)<state.staking_period{
-           return Err(ContractError::TimeRemaining {  })
+    //   if (env.block.time.seconds() - token.unstake_time)<state.staking_period{
+    //        return Err(ContractError::TimeRemaining {  })
       
-        }
+    //     }
 
 
       if token.reward_hope > Uint128::new(0){
@@ -193,16 +218,26 @@ fn execute_withdraw_nft(
                 }]
         }));
     }
-      TOKENINFO.remove(deps.storage,&token_id);
-      CONFIG.update(deps.storage,
+    
+    TOKENINFO.remove(deps.storage,&token_id);
+    
+   }
+
+   let my_nfts = OWNEDTOKEN.load(deps.storage,&info.sender.to_string())?;
+   let mut new_nfts:Vec<String> = vec![];
+   for id  in my_nfts{
+     if id !=  token_id{
+         new_nfts.push(id)
+     }
+   }   
+
+   OWNEDTOKEN.save(deps.storage,&info.sender.to_string(),&new_nfts)?;
+    
+    CONFIG.update(deps.storage,
         |mut state|->StdResult<_>{
             state.total_staked = state.total_staked-Uint128::new(1);
             Ok(state)
         })?;
-   }
-
-   
-    
   
    Ok(Response::new()
         .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
@@ -290,9 +325,9 @@ fn execute_distribute_reward(
         return Err(ContractError::Unauthorized {});
     }
 
-    if (env.block.time.seconds() - state.last_distribute)<state.staking_period{
-        return Err(ContractError::CanNotDistribute {  })
-    }
+    // if (env.block.time.seconds() - state.last_distribute)<state.staking_period{
+    //     return Err(ContractError::CanNotDistribute {  })
+    // }
 
     let amount_juno= info
         .funds
@@ -524,6 +559,9 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
           QueryMsg::GetAllTokens {} => to_binary(&query_get_members(deps)?),
           QueryMsg::GetTokenInfo {} => to_binary(&query_token_info(deps)?),
           QueryMsg::GetCurrentTime{} => to_binary(&query_get_current_time(deps,_env)?),
+          QueryMsg::GetToken { token_id } => to_binary(&query_get_token(deps,token_id)?),
+          QueryMsg::GetMyIds { address } => to_binary(&query_my_ids(deps,address)?),
+          QueryMsg::GetMyInfo { address }=> to_binary(&query_my_info(deps,address)?)
     }
 }
 
@@ -532,7 +570,7 @@ pub fn query_state_info(deps:Deps) -> StdResult<State>{
     Ok(state)
 }
 
-pub fn query_get_current_time(deps:Deps,env:Env) -> StdResult<u64>{
+pub fn query_get_current_time(_deps:Deps,env:Env) -> StdResult<u64>{
     Ok(env.block.time.seconds())
 }
 
@@ -560,6 +598,35 @@ fn parse_token_info(
 }
 
 
+pub fn query_get_token(deps:Deps,token_id:String) -> StdResult<TokenInfo>{
+    let token_info = TOKENINFO.load(deps.storage,&token_id)?;
+    Ok(token_info)
+}
+
+pub fn query_my_ids(deps:Deps,address:String) -> StdResult<Vec<String>>{
+    let my_ids = OWNEDTOKEN.may_load(deps.storage,&address)?;
+    if my_ids == None{
+        Ok(vec![])
+    }
+    else{
+        Ok(my_ids.unwrap())
+    }
+}
+
+pub fn query_my_info(deps:Deps,address:String) -> StdResult<Vec<TokenInfo>>{
+    let my_ids = OWNEDTOKEN.may_load(deps.storage,&address)?;
+    if my_ids == None{
+        Ok(vec![])
+    }
+    else{
+        let mut my_nfts:Vec<TokenInfo> = vec![];
+        for id in my_ids.unwrap(){            
+            let token_info = TOKENINFO.load(deps.storage, &id)?;
+            my_nfts.push(token_info);         
+        }
+          Ok(my_nfts)
+    }
+}
 
 
 #[cfg(test)]
@@ -638,12 +705,50 @@ mod tests {
         });
         execute(deps.as_mut(),mock_env(),info,msg).unwrap();
 
+        // let my_nfs = query_my_ids(deps,"")
+
         let tokens = query_get_members(deps.as_ref()).unwrap();
         assert_eq!(tokens,vec!["reveal1","reveal2"]);
+
+        let my_ids = query_my_ids(deps.as_ref(), "owner2".to_string()).unwrap();
+        let eq_my_ids:Vec<String> = vec![];
+        assert_eq!(my_ids,eq_my_ids);
+
+        let my_ids = query_my_ids(deps.as_ref(), "owner1".to_string()).unwrap();
+        assert_eq!(my_ids,["reveal1","reveal2"]);
+
+        let my_token_infos = query_my_info(deps.as_ref(),"owner2".to_string()).unwrap();
+        let eq_my_ids:Vec<TokenInfo> = vec![];
+        assert_eq!(my_token_infos,eq_my_ids);
+
+        let my_token_infos = query_my_info(deps.as_ref(),"owner1".to_string()).unwrap();
+        assert_eq!(my_token_infos,vec![TokenInfo{
+            owner:"owner1".to_string(),
+            token_id:"reveal1".to_string(),
+            stake_time:mock_env().block.time.seconds(),
+            status:"Staked".to_string(),
+            reward_hope:Uint128::new(0),
+            reward_juno:Uint128::new(0),
+            unstake_time :0
+        },TokenInfo{
+            owner:"owner1".to_string(),
+            token_id:"reveal2".to_string(),
+            stake_time:mock_env().block.time.seconds(),
+            status:"Staked".to_string(),
+            reward_hope:Uint128::new(0),
+            reward_juno:Uint128::new(0),
+            unstake_time :0
+        }]);
+
+        
 
         let info = mock_info("owner1", &[]);
         let msg = ExecuteMsg::UnstakeNft { token_id : "reveal1".to_string() };
         execute(deps.as_mut(),mock_env(),info,msg).unwrap();
+
+        let state =  query_state_info(deps.as_ref()).unwrap();
+
+        assert_eq!(state.total_staked,Uint128::new(1));
 
         let tokens = query_get_members(deps.as_ref()).unwrap();
         assert_eq!(tokens,vec!["reveal1","reveal2"]);
@@ -666,6 +771,26 @@ mod tests {
             reward_juno:Uint128::new(0),
             unstake_time :0
         }]);
+
+         let my_token_infos = query_my_info(deps.as_ref(),"owner1".to_string()).unwrap();
+        assert_eq!(my_token_infos,vec![TokenInfo{
+            owner:"owner1".to_string(),
+            token_id:"reveal1".to_string(),
+            stake_time:mock_env().block.time.seconds(),
+            status:"Unstaking".to_string(),
+            reward_hope:Uint128::new(0),
+            reward_juno:Uint128::new(0),
+            unstake_time : mock_env().block.time.seconds()
+        },TokenInfo{
+            owner:"owner1".to_string(),
+            token_id:"reveal2".to_string(),
+            stake_time:mock_env().block.time.seconds(),
+            status:"Staked".to_string(),
+            reward_hope:Uint128::new(0),
+            reward_juno:Uint128::new(0),
+            unstake_time :0
+        }]);
+
 
         let info = mock_info("reward_wallet1", &[]);     
         let msg = ExecuteMsg::DistributeReward { token_balance:Uint128::new(0)  };
@@ -707,6 +832,11 @@ mod tests {
         let info = mock_info("owner1", &[]);     
         let msg = ExecuteMsg::WithdrawNft { token_id:"reveal1".to_string() };
         let res = execute(deps.as_mut(),mock_env(),info,msg).unwrap();
+        
+        
+        let my_ids = query_my_ids(deps.as_ref(), "owner1".to_string()).unwrap();
+        assert_eq!(my_ids,["reveal2"]);
+
         assert_eq!(1,res.messages.len());
         assert_eq!(res.messages[0].msg,CosmosMsg::Wasm(WasmMsg::Execute {
              contract_addr: "nft_address1".to_string(), 
@@ -717,6 +847,17 @@ mod tests {
 
         let tokens = query_get_members(deps.as_ref()).unwrap();
         assert_eq!(tokens,vec!["reveal2"]);
+
+        let id_info = query_get_token(deps.as_ref(),"reveal2".to_string()).unwrap();
+        assert_eq!(id_info,TokenInfo{
+            owner:"owner1".to_string(),
+            token_id:"reveal2".to_string(),
+            stake_time:mock_env().block.time.seconds(),
+            status:"Staked".to_string(),
+            reward_hope:Uint128::new(0),
+            reward_juno:Uint128::new(0),
+            unstake_time :0
+        })
 
     }
 }
