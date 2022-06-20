@@ -28,6 +28,7 @@ pub fn instantiate(
         owner:info.sender.to_string(),
         denom:msg.denom,
         staking_period : msg.staking_period,
+        distribute_period:msg.distribute_period,
         reward_wallet : msg.reward_wallet,
         total_staked : Uint128::new(0),
         nft_address : "nft_address".to_string(),
@@ -56,9 +57,10 @@ pub fn execute(
         ExecuteMsg::SetNftAddress { address } => execute_nft_address(deps,env,info,address),
         ExecuteMsg::SetTokenAddress { address } => execute_token_address(deps,env,info,address),
         ExecuteMsg::SetOwner { address } => execute_set_owner(deps, env, info, address),
-        ExecuteMsg::WithdrawAllMoney { amount_juno,amount_hope } => execute_withdraw_all(deps,env, info, amount_juno,amount_hope),
+        ExecuteMsg::WithdrawAllMoney { amount_juno} => execute_withdraw_all(deps,env, info, amount_juno),
         ExecuteMsg::SetStakingPeriod { time } => execute_staking_period(deps,env,info,time),
-        ExecuteMsg::SetStake { flag } => execute_set_stake(deps,info,flag)
+        ExecuteMsg::SetStake { flag } => execute_set_stake(deps,info,flag),
+        ExecuteMsg::SetDistributePeriod { time } => execute_distribute_period(deps, env, info, time)
     }
 }
 
@@ -193,21 +195,11 @@ fn execute_withdraw_nft(
           return Err(ContractError::StatusError {  })
       }
 
-    //   if (env.block.time.seconds() - token.unstake_time)<state.staking_period{
+    //   if (_env.block.time.seconds() - token.unstake_time)<state.staking_period{
     //        return Err(ContractError::TimeRemaining {  })
       
     //     }
 
-
-      if token.reward_hope > Uint128::new(0){
-      messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
-             contract_addr: state.token_address, 
-             msg: to_binary(&Cw20ExecuteMsg::Transfer {
-                  recipient: token.owner.clone(), 
-                  amount: token.reward_hope 
-                })? , 
-             funds: vec![] }));
-        }
        
       if token.reward_juno > Uint128::new(0){
       messages.push(CosmosMsg::Bank(BankMsg::Send {
@@ -217,6 +209,17 @@ fn execute_withdraw_nft(
                     amount:token.reward_juno
                 }]
         }));
+    }
+
+     if token.reward_hope > Uint128::new(0){
+        messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
+             contract_addr: state.token_address.clone(), 
+             msg: to_binary(&Cw20ExecuteMsg::Transfer {
+                    recipient:info.sender.to_string(),
+                    amount:token.reward_hope
+                })? , 
+             funds: vec![]
+             }))
     }
     
     TOKENINFO.remove(deps.storage,&token_id);
@@ -277,15 +280,6 @@ fn execute_get_reward(
           return Err(ContractError::Unauthorized {  })
       }
 
-     if token.reward_hope > Uint128::new(0){
-      messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
-             contract_addr: state.token_address.clone(), 
-             msg: to_binary(&Cw20ExecuteMsg::Transfer {
-                  recipient: token.owner.clone(), 
-                  amount: token.reward_hope 
-                })? , 
-             funds: vec![] }));
-        }
        
       if token.reward_juno > Uint128::new(0){
       messages.push(CosmosMsg::Bank(BankMsg::Send {
@@ -296,11 +290,23 @@ fn execute_get_reward(
                 }]
         }));
     }
+
+    if token.reward_hope > Uint128::new(0){
+        messages.push(CosmosMsg::Wasm(WasmMsg::Execute {
+             contract_addr: state.token_address.clone(), 
+             msg: to_binary(&Cw20ExecuteMsg::Transfer {
+                    recipient:info.sender.to_string(),
+                    amount:token.reward_hope
+                })? , 
+             funds: vec![]
+             }))
+    }
+
       TOKENINFO.update(deps.storage,&token_id,
         |token_info|->StdResult<_>{
             let mut token_info = token_info.unwrap();
-            token_info.reward_hope = Uint128::new(0);
             token_info.reward_juno = Uint128::new(0);
+            token_info.reward_hope = Uint128::new(0);
             Ok(token_info)
         })?;
    }
@@ -367,8 +373,8 @@ fn execute_distribute_reward(
             {       TOKENINFO.update(deps.storage, &token_id,
                 |token_info|->StdResult<_>{
                     let mut token_info = token_info.unwrap();
-                    token_info.reward_hope = token_info.reward_hope + token_balance/reward_number;
                     token_info.reward_juno = token_info.reward_juno + amount_juno/reward_number;
+                    token_info.reward_hope = token_info.reward_hope + token_balance/reward_number;
                     Ok(token_info)
             }
             )?; }
@@ -389,7 +395,8 @@ fn execute_distribute_reward(
                   recipient:env.contract.address.to_string(), 
                   amount: token_balance 
                 })? , 
-             funds: vec![] })))
+             funds: vec![]
+             })))
 }
 
 
@@ -492,6 +499,27 @@ fn execute_staking_period(
     Ok(Response::default())
 }
 
+fn execute_distribute_period(
+    deps: DepsMut,
+    _env : Env,
+    info: MessageInfo,
+    time: u64,
+)->Result<Response,ContractError>{
+
+    let state = CONFIG.load(deps.storage)?;
+
+    if info.sender.to_string() != state.reward_wallet{
+        return Err(ContractError::Unauthorized {});
+    }
+    CONFIG.update(deps.storage,
+    |mut state|->StdResult<_>{
+        state.distribute_period = time;
+        Ok(state)
+    })?;
+    Ok(Response::default())
+}
+
+
 
 fn execute_set_stake(
     deps: DepsMut,
@@ -520,7 +548,6 @@ fn execute_withdraw_all(
     _env : Env,
     info: MessageInfo,
     amount_juno: Uint128,
-    amount_hope: Uint128
 )->Result<Response,ContractError>{
 
     let state = CONFIG.load(deps.storage)?;
@@ -530,13 +557,6 @@ fn execute_withdraw_all(
     }
    
     Ok(Response::new()
-        .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
-             contract_addr: state.token_address, 
-             msg: to_binary(&Cw20ExecuteMsg::Transfer {
-                  recipient: info.sender.to_string(), 
-                  amount: amount_hope 
-                })? , 
-             funds: vec![] }))
         .add_message(CosmosMsg::Bank(BankMsg::Send {
                 to_address: info.sender.to_string(),
                 amount:vec![Coin{
@@ -642,7 +662,8 @@ mod tests {
         let instantiate_msg = InstantiateMsg {
             denom : "ujuno".to_string(),
             staking_period : 1000,
-            reward_wallet :"reward_wallet".to_string()
+            reward_wallet :"reward_wallet".to_string(),
+            distribute_period:100
         };
         let info = mock_info("creator", &[]);
         let res = instantiate(deps.as_mut(), mock_env(), info, instantiate_msg).unwrap();
@@ -659,7 +680,8 @@ mod tests {
             reward_wallet:"reward_wallet".to_string(),
             total_staked:Uint128::new(0),
             can_stake : true,
-            last_distribute : mock_env().block.time.seconds()
+            last_distribute : mock_env().block.time.seconds(),
+            distribute_period:100
         });
 
         let info = mock_info("creator", &[]);
@@ -677,6 +699,14 @@ mod tests {
         let info = mock_info("creator", &[]);
         let msg = ExecuteMsg::SetRewardWallet { address:"reward_wallet1".to_string() };
         execute(deps.as_mut(),mock_env(),info,msg).unwrap();
+
+        
+        let info = mock_info("reward_wallet1", &[]);
+        let msg = ExecuteMsg::SetDistributePeriod { time:150 };
+        execute(deps.as_mut(),mock_env(),info,msg).unwrap();
+
+        let state= query_state_info(deps.as_ref()).unwrap();
+        assert_eq!(state.distribute_period,150);
 
         let state = query_state_info(deps.as_ref()).unwrap();
         assert_eq!(state.reward_wallet,"reward_wallet1".to_string());
@@ -748,7 +778,7 @@ mod tests {
 
         let state =  query_state_info(deps.as_ref()).unwrap();
 
-        assert_eq!(state.total_staked,Uint128::new(1));
+        assert_eq!(state.total_staked,Uint128::new(2));
 
         let tokens = query_get_members(deps.as_ref()).unwrap();
         assert_eq!(tokens,vec!["reveal1","reveal2"]);
@@ -759,16 +789,16 @@ mod tests {
             token_id:"reveal1".to_string(),
             stake_time:mock_env().block.time.seconds(),
             status:"Unstaking".to_string(),
-            reward_hope:Uint128::new(0),
             reward_juno:Uint128::new(0),
+            reward_hope:Uint128::new(0),
             unstake_time : mock_env().block.time.seconds()
         },TokenInfo{
             owner:"owner1".to_string(),
             token_id:"reveal2".to_string(),
             stake_time:mock_env().block.time.seconds(),
             status:"Staked".to_string(),
-            reward_hope:Uint128::new(0),
             reward_juno:Uint128::new(0),
+             reward_hope:Uint128::new(0),
             unstake_time :0
         }]);
 
@@ -793,7 +823,7 @@ mod tests {
 
 
         let info = mock_info("reward_wallet1", &[]);     
-        let msg = ExecuteMsg::DistributeReward { token_balance:Uint128::new(0)  };
+        let msg = ExecuteMsg::DistributeReward { token_balance:Uint128::new(10)  };
         execute(deps.as_mut(),mock_env(),info,msg).unwrap();
 
         let token_infos = query_token_info(deps.as_ref()).unwrap();
@@ -802,30 +832,31 @@ mod tests {
             token_id:"reveal1".to_string(),
             stake_time:mock_env().block.time.seconds(),
             status:"Unstaking".to_string(),
-            reward_hope:Uint128::new(0),
             reward_juno:Uint128::new(0),
+             reward_hope:Uint128::new(5),
             unstake_time : mock_env().block.time.seconds()
         },TokenInfo{
             owner:"owner1".to_string(),
             token_id:"reveal2".to_string(),
             stake_time:mock_env().block.time.seconds(),
             status:"Staked".to_string(),
-            reward_hope:Uint128::new(0),
             reward_juno:Uint128::new(0),
+             reward_hope:Uint128::new(5),
             unstake_time :0
         }]);
 
         let info = mock_info("owner1", &[]);     
         let msg = ExecuteMsg::GetReward { token_ids:vec!["reveal1".to_string(),"reveal2".to_string()] };
         let res = execute(deps.as_mut(),mock_env(),info,msg).unwrap();
-        assert_eq!(0,res.messages.len());
-        // assert_eq!(res.messages[0].msg,CosmosMsg::Bank(BankMsg::Send {
-        //         to_address: "owner1".to_string(),
-        //         amount:vec![Coin{
-        //             denom:state.denom.clone(),
-        //             amount:Uint128::new(5)
-        //         }]
-        // }));
+        assert_eq!(2,res.messages.len());
+        assert_eq!(res.messages[0].msg,CosmosMsg::Wasm(WasmMsg::Execute {
+             contract_addr: state.token_address.clone(), 
+             msg: to_binary(&Cw20ExecuteMsg::Transfer {
+                    recipient:"owner1".to_string(),
+                    amount:Uint128::new(5)
+                }).unwrap() , 
+             funds: vec![]
+             }));
 
        
         

@@ -19,7 +19,8 @@ pub struct State {
     pub nft_address : String,
     pub token_address : String,
     pub can_stake : bool,
-    pub last_distribute:u64
+    pub last_distribute:u64,
+    pub distribute_period:u64
 }
 
 
