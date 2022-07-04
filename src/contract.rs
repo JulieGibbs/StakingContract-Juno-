@@ -161,6 +161,11 @@ fn execute_unstake_nft(
             Ok(token_info)
         }
     )?;
+     CONFIG.update(deps.storage,
+        |mut state|->StdResult<_>{
+            state.total_staked = state.total_staked-Uint128::new(1);
+            Ok(state)
+        })?;
    }
    
     Ok(Response::default())
@@ -195,10 +200,10 @@ fn execute_withdraw_nft(
           return Err(ContractError::StatusError {  })
       }
 
-    //   if (_env.block.time.seconds() - token.unstake_time)<state.staking_period{
-    //        return Err(ContractError::TimeRemaining {  })
+      if (_env.block.time.seconds() - token.unstake_time)<state.staking_period{
+           return Err(ContractError::TimeRemaining {  })
       
-    //     }
+        }
 
        
       if token.reward_juno > Uint128::new(0){
@@ -235,12 +240,6 @@ fn execute_withdraw_nft(
    }   
 
    OWNEDTOKEN.save(deps.storage,&info.sender.to_string(),&new_nfts)?;
-    
-    CONFIG.update(deps.storage,
-        |mut state|->StdResult<_>{
-            state.total_staked = state.total_staked-Uint128::new(1);
-            Ok(state)
-        })?;
   
    Ok(Response::new()
         .add_message(CosmosMsg::Wasm(WasmMsg::Execute {
@@ -331,9 +330,9 @@ fn execute_distribute_reward(
         return Err(ContractError::Unauthorized {});
     }
 
-    // if (env.block.time.seconds() - state.last_distribute)<state.staking_period{
-    //     return Err(ContractError::CanNotDistribute {  })
-    // }
+    if (env.block.time.seconds() - state.last_distribute)<state.distribute_period{
+        return Err(ContractError::CanNotDistribute {  })
+    }
 
     let amount_juno= info
         .funds
@@ -352,15 +351,9 @@ fn execute_distribute_reward(
        return Err(ContractError::NotStaked {  })
    }
 
-   let mut reward_number = state.total_staked;
+   let  reward_number = state.total_staked;
 
  
-    for token_id in token_group.clone(){
-        let token_info = TOKENINFO.load(deps.storage, &token_id )?;
-        if  (env.block.time.seconds() - token_info.unstake_time) >state.staking_period && token_info.status == "Unstaking".to_string() {
-          reward_number = reward_number - Uint128::new(1);   
-        }
-    }
 
     if reward_number == Uint128::new(0){
         return Err(ContractError::NotStaked {  })
@@ -369,7 +362,7 @@ fn execute_distribute_reward(
 
      for token_id in token_group{
             let token_info = TOKENINFO.load(deps.storage,&token_id)?;
-            if token_info.status == "Staked".to_string() || (token_info.status == "Unstaking".to_string()&&(env.block.time.seconds() - token_info.unstake_time) <state.staking_period)
+            if token_info.status == "Staked".to_string() 
             {       TOKENINFO.update(deps.storage, &token_id,
                 |token_info|->StdResult<_>{
                     let mut token_info = token_info.unwrap();
